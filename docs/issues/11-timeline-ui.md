@@ -19,16 +19,18 @@ feed with the knock animation (DESIGN §12.1, §12.3).
 - Visual identity tokens as CSS custom properties (DESIGN §12.3 hex
   values, radii, fonts); light/dark via `prefers-color-scheme` +
   manual toggle persisted in localStorage.
-- Fonts: subset M PLUS Rounded 1c + Nunito woff2 bundled (U4: total
-  < 300 KB or fall back to system rounded stack); zero external
-  requests (CI asserts no http(s) URLs in built CSS/JS beyond same-origin).
+- Fonts: subset M PLUS Rounded 1c + Nunito woff2 bundled (U4); zero
+  external requests (CI asserts no http(s) URLs in built CSS/JS beyond
+  same-origin). Size budget (< 300 KB) and Lighthouse hardening are
+  Issue 14's release pass, not gates here.
 - All strings from `/api/locale`; no hardcoded user-facing text.
 - Log-derived values rendered as text nodes only; `{@html}` absent (T1).
 
 ## Acceptance criteria
 - `npm run check` clean; component tests (Vitest) for feed rendering
   from fixture JSON, SSE prepend, reduced-motion path; axe-core pass on
-  the page (no serious violations); Lighthouse perf ≥ 90 on demo data.
+  the page (no serious violations); built assets make zero external
+  requests.
 
 ## Validation
 `cd web && npm run check && npm test && npm run build`

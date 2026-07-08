@@ -18,9 +18,9 @@ story. The dogfooding host is Linux/systemd where rsyslog is available.
   files; handles rotation via inode change and truncation via size
   regression; persists (inode, offset) so restarts do not re-notify.
 - On start, begin at end-of-file by default (`ingest.backfill: false`);
-  optional backfill reads the existing file once for timeline seeding
-  (deduplicated by offset bookkeeping, digest counts only from the
-  watermark forward).
+  optional backfill reads the existing file once for timeline seeding.
+  Backfilled events are marked (`events.backfilled=1`) and permanently
+  excluded from pushes and digest counts — timeline display only.
 - journald adapter (exec `journalctl -f -o json`) is designed as a second
   implementation of the same `Source` interface, scheduled as a
   follow-up issue (wave 3, optional for v1 release).

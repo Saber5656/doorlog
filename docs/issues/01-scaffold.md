@@ -23,7 +23,8 @@ Dockerfile + compose + CI, serving `/healthz` and the (placeholder) UI.
 - `make build` produces one binary that serves UI + healthz with no
   Node at runtime.
 - `docker build` succeeds; `docker run -p 8090:8090 <img>` → healthz 200.
-- CI green on the PR; image size assertion (< 40 MB) in CI.
+- CI green on the PR; image size gate in CI: fail > 60 MB, warn > 40 MB
+  (DESIGN §16).
 
 ## Validation
 `make build && ./doorlog & curl -fsS localhost:8090/healthz`

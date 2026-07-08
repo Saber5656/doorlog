@@ -20,6 +20,9 @@ and honest privacy/security notes (DESIGN §1 success criteria, §17).
   known-limitation note (U1); GeoLite2 attribution wording (U3).
 - Repo hygiene: LICENSE (MIT), NOTICE (fonts OFL), CONTRIBUTING stub,
   issue templates pointing at docs/.
+- UI hardening pass (deferred from Issue 11): Lighthouse perf ≥ 90 on
+  demo data; bundled font subsets < 300 KB total or system-stack
+  fallback decision recorded (U4).
 
 ## Acceptance criteria
 - A fresh reader can go compose-copy → running UI in ≤5 min on a stock

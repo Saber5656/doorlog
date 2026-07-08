@@ -6,15 +6,15 @@ types (`event.Event`, `ingest.RawLine`, `ingest.Source`,
 `parse.Parser`), and implement the SQLite store with migrations.
 
 ## Scope
-- `internal/config`: full schema of DESIGN §13 with defaults,
-  `DOORLOG_*` env overrides (nested keys via `_`), validation (paths
-  absolute, times parseable, locale ∈ {ja,en}); `DOORLOG_NTFY_TOKEN`
-  read from env only.
+- `internal/config`: full schema of DESIGN §13 with defaults, env
+  overrides via the explicit `DOORLOG_*` mapping table in §13 (no
+  generic `_`-splitting), validation (paths absolute, times parseable,
+  locale ∈ {ja,en}); `DOORLOG_NTFY_TOKEN` read from env only.
 - `internal/event`: `Event` struct exactly as DESIGN §4; type +
   severity constants; ULID generation.
-- `internal/ingest`: `RawLine{Path, Text, TS(time read)}` and
-  `Source interface { Lines(ctx) <-chan RawLine }` (implementations in
-  05/13/15).
+- `internal/ingest`: `RawLine{Path, Text, TS(time read), Backfilled bool}`
+  and `Source interface { Lines(ctx) <-chan RawLine }` (implementations
+  in 05/13/15); `Backfilled` propagates to `Event.Backfilled`.
 - `internal/parse`: `Parser interface { Parse(RawLine) (RawEvent, bool) }`
   and `RawEvent` (pre-aggregation shape: kind, ts, user, ip, method,
   fingerprint, jail, action).

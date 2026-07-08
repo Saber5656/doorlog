@@ -101,6 +101,10 @@ type Event struct {
     Count       int       // >=1; >1 only for ssh.failed_attempts
     WindowStart *time.Time
     WindowEnd   *time.Time
+    Method      string    // "publickey" | "password" | "keyboard-interactive" | ""
+    Fingerprint string    // "SHA256:..." on publickey logins, else ""
+    Variant     string    // persisted template hint ("restore", ...), "" = default
+    Backfilled  bool      // ingested via backfill: timeline-only, excluded from push+digest
     RawSample   string    // one representative raw line (truncated 512B)
     Source      string    // "authlog" | "fail2ban" | "demo"
 }
@@ -131,7 +135,8 @@ Line = syslog prefix + `sshd[pid]: ` + message. Both timestamp styles
 must parse:
 
 - RFC3164 (`Jul  8 03:12:44`, no year): regex
-  `^(?P<ts>[A-Z][a-z]{2}\s+\d{1,2} \d{2}:\d{2}:\d{2}) (?P<host>\S+) sshd\[\d+\]: (?P<msg>.*)$`
+  `^(?P<ts>[A-Z][a-z]{2}\s+\d{1,2} \d{2}:\d{2}:\d{2}) (?P<host>\S+) sshd(?:-session)?\[\d+\]: (?P<msg>.*)$`
+  (OpenSSH >= 9.8 logs under the `sshd-session` process name — U1)
   Year completion: assume current year; if result > now+24h, subtract
   one year (December→January boundary). Timezone: host TZ (config).
 - ISO/RSYSLOG_FileFormat
@@ -142,9 +147,9 @@ Message patterns (Go regexp, anchored):
 
 | Pattern | → RawEvent |
 |---|---|
-| `^Accepted (publickey|password|keyboard-interactive/pam) for (\S+) from (\S+) port \d+ ssh2(?:: (\S+) (\S+))?` | login.success {user, ip, method, keytype?, fingerprint?} |
-| `^Failed (password|publickey|keyboard-interactive/pam) for (?:invalid user )?(.+?) from (\S+) port \d+ ssh2` | login.failed {user, ip} |
-| `^Invalid user (.*?) from (\S+)(?: port \d+)?$` | login.failed {user, ip} (dedup note: the paired `Failed password for invalid user` line for the same attempt is the one counted; `Invalid user` alone counts only if no `Failed` line follows within 5 s — simplification: parser emits both, aggregator dedups by (ip, second) keeping max 1 per second) |
+| `^Accepted (publickey|password|keyboard-interactive/pam) for (\S+) from (\S+) port \d+ ssh2(?:: (\S+) (\S+))?$` | login.success {user, ip, method, keytype?, fingerprint?} |
+| `^Failed (password|publickey|keyboard-interactive/pam) for (?:invalid user )?(.+?) from (\S+) port \d+ ssh2$` | login.failed {user, ip} |
+| `^Invalid user (.*?) from (\S+)(?: port \d+)?$` | login.failed {user, ip} (an attempt often emits both an `Invalid user` and a `Failed password for invalid user` line; the aggregator's per-(ip, second) dedup — §6 — absorbs the pair. Same-second only, by design: the rare second-straddling pair costs one over-count, acceptable for v1) |
 | `^Connection closed by (?:authenticating|invalid) user (\S+) (\S+) port \d+ \[preauth\]$` | login.failed {user, ip} (covers clients that give up before N tries) |
 
 Everything else (`banner exchange`, `Disconnected`, `pam_unix` session
@@ -160,17 +165,24 @@ a >8 KB line (truncated safely), and unrecognized lines asserting `false`.
 ```
 
 `Restore Ban` (re-ban after fail2ban restart) maps to `fail2ban.banned`
-with a template variant that avoids double-alarming. Jail name is kept
-in RawEvent for v2 but not translated in v1 (only `sshd` jail expected).
+with `Variant: "restore"` (persisted on the event) so translation picks
+the gentler template. fail2ban timestamps carry no zone — interpreted
+in the configured timezone, same as RFC3164. Jail name is kept in
+RawEvent for v2 but not translated in v1 (only `sshd` jail expected).
 Fixtures: Ban/Unban/Restore Ban + non-NOTICE lines ignored.
 
 ### 5.3 Robustness rules (both parsers)
 
 - Input lines longer than 8 KB are truncated before regex (ReDoS/memory
   guard, threat T4).
-- Parsed usernames are attacker-controlled: stored verbatim, but
-  control characters (C0/C1) and newlines are stripped at parse time
-  (threat T2), and length-capped at 64 runes.
+- Every captured field is attacker-influenced. One shared sanitizer at
+  the parse boundary strips C0/C1 control chars + newlines from ALL
+  captured strings (user, fingerprint, jail, raw_sample, ...), caps
+  usernames at 64 runes and raw_sample at 512 bytes (threat T2).
+- Captured IPs must parse with `netip.ParseAddr` (IPv6 normalized to
+  canonical form); lines with invalid IPs are dropped and counted in
+  the ignored metric. Downstream (geo, CIDR device match) may then
+  assume valid addresses.
 
 ## 6. Aggregation (`ssh.failed_attempts`)
 
@@ -180,7 +192,11 @@ Fixtures: Ban/Unban/Restore Ban + non-NOTICE lines ignored.
   since last increment, or the daily digest fires — whichever first.
   While open, the stored event row is updated in place (`Count`,
   `WindowEnd`), and an SSE `event.updated` is emitted so the UI counter
-  ticks live.
+  ticks live. Closing is persisted: `bucket_closed_at` +
+  `bucket_close_reason ('age'|'idle'|'digest')` are set, and a closed
+  bucket is never reopened (a later attempt from the same IP opens a
+  new bucket). Open-bucket lookup = the §10 partial index
+  (`bucket_closed_at IS NULL`), which also makes restart-resume safe.
 - Per-second dedup: max 1 increment per (ip, second) to absorb the
   `Invalid user` + `Failed password` pair for one attempt.
 - Severity: `notice`; special case count=1 AND private IP → `ok`
@@ -215,8 +231,12 @@ pre-filled with user/ip/fingerprint).
 
 ## 8. Translation layer
 
-Renderer: Go `text/template` over locale YAML, strict mode — a missing
-key or unused placeholder fails CI (golden tests in both locales).
+Renderer: a small custom placeholder engine — `{name}` tokens matching
+`\{[a-z_]+\}` substituted from a per-event context map (NOT Go
+`text/template`; locale files must stay trivially editable by
+non-Go-programmers). Strict mode: a template containing a placeholder
+absent from the context, or a locale missing a required key, fails at
+load time and in CI (golden tests in both locales).
 Message key = `<event.Type>.<variant>.<context>` where context ∈
 `timeline | push | push_title` and variant is resolved by rules
 (e.g. `known/unknown` for login, `one/few/many` for counts: 1 / 2–9 / 10+).
@@ -279,7 +299,8 @@ under `ui:` and are served to the frontend via `GET /api/locale`.
 
 - `POST {ntfy.server_url}/{ntfy.topic}`; headers: `Title` (push_title),
   `Priority` (alert→`high`, digest/notice→`default`), `Tags`
-  (`door`+severity tag); body = translated push text. Optional
+  (comma-separated: `door,alert` / `door,notice` / `door,ok`);
+  body = translated push text. Optional
   `Authorization: Bearer $DOORLOG_NTFY_TOKEN` (env only, never in yaml —
   secrets stay out of files the user might commit).
 - Delivery rules = ADR-004 table; evaluated after store commit.
@@ -302,12 +323,16 @@ CREATE TABLE events (
   device_id INTEGER REFERENCES devices(id) ON DELETE SET NULL,
   private INTEGER NOT NULL DEFAULT 0, country TEXT NOT NULL DEFAULT '',
   count INTEGER NOT NULL DEFAULT 1, window_start TEXT, window_end TEXT,
+  method TEXT NOT NULL DEFAULT '', fingerprint TEXT NOT NULL DEFAULT '',
+  variant TEXT NOT NULL DEFAULT '',
+  bucket_closed_at TEXT, bucket_close_reason TEXT,
   raw_sample TEXT NOT NULL DEFAULT '', source TEXT NOT NULL,
   backfilled INTEGER NOT NULL DEFAULT 0,  -- 1 = ingested via backfill: timeline-only, excluded from digests
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 CREATE INDEX idx_events_ts ON events(ts DESC);
-CREATE INDEX idx_events_open_bucket ON events(type, ip, window_end) WHERE type='ssh.failed_attempts';
+CREATE INDEX idx_events_open_bucket ON events(type, ip)
+  WHERE type='ssh.failed_attempts' AND bucket_closed_at IS NULL;
 
 CREATE TABLE devices (
   id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
@@ -346,15 +371,53 @@ JSON, no auth (v1, LAN assumption — §14). Base `/api`. Errors:
 | `GET /api/summary/today` | `{door_status:"guarded|knocked|check", attempts_today, sources_today, banned_today, logins_today, last_event_ts}` — `check` iff an `alert` event in last 24 h is not "resolved" by registering the device |
 | `GET /api/digests?limit=14` | Rendered digests for timeline interleave |
 | `GET /api/devices` / `POST` / `PATCH /:id` / `DELETE /:id` | Known device CRUD; POST body `{name, emoji, user, ip, fingerprint}` (any subset of the three matchers, at least one required) |
-| `GET /api/settings` / `PUT` | Whitelisted keys only: `locale`, `digest_time`, `notify.*`; ntfy token never readable back (write-only, env-preferred) |
+| `GET /api/settings` / `PUT` | Whitelisted keys only: `locale`, `digest.time`, `digest.skip_empty`, `notify.immediate_ban`, `notify.include_ip`. Delivery endpoint (`notify.ntfy_url`, `ntfy_topic`, token) is config-file/env only — never readable or writable via API (T7); GET returns it masked (`ntfy.example.com/…abc`) for display |
 | `POST /api/notify/test` | Sends test push, returns delivery result |
 | `GET /api/notify/failures?limit=10` | Recent delivery failures (ts, error) for the settings page |
 | `GET /api/locale` | All `ui:` + `events:` strings for the active locale (frontend i18n) |
 | `GET /api/stream` | SSE: `event.created`, `event.updated`, `summary.changed` |
 | `GET /healthz` | 200 + `{version, demo:bool}` |
 
-State-changing endpoints require `Origin` header matching the request
-host or absence thereof (curl) — cheap CSRF guard without auth (T3).
+Request guard (T3): every request's `Host` must match `listen` or an
+entry in `trusted_hosts` (§13) — DNS-rebinding defense; additionally,
+state-changing routes require the `Origin` header, when present, to
+match the request host. No cookies exist anywhere.
+
+### 11.1 Wire shapes (normative)
+
+```jsonc
+// Event (GET /api/events → {"events":[...], "next_cursor":"01J..."|null})
+{
+  "id": "01J8Z...", "ts": "2026-07-08T03:12:44+09:00",
+  "type": "ssh.failed_attempts",          // §4.1 values
+  "severity": "notice",                    // ok | notice | alert
+  "text": "どこか外から 47 回しつこくノックされました（185.220.101.5）",
+  "user": "root", "ip": "185.220.101.5",
+  "device": {"id": 3, "name": "やすしの MacBook", "emoji": "💻"} /* or null */,
+  "private": false, "country": "RU",
+  "count": 47, "window_start": "...", "window_end": "...",  // null unless aggregate
+  "fingerprint": "SHA256:...",             // "" unless publickey login; needed to pre-fill device form
+  "backfilled": false
+}
+// Device (GET /api/devices → {"devices":[...]}; POST/PATCH body = same minus id/created_at)
+{"id": 3, "name": "やすしの MacBook", "emoji": "💻",
+ "user": "yasushi", "ip": "192.168.1.20", "fingerprint": "", "created_at": "..."}
+// POST /api/devices validation: name required (1..40 runes); at least one of user/ip/fingerprint;
+// ip = exact addr or CIDR (netip). 422 on violation.
+// Summary (GET /api/summary/today)
+{"door_status": "guarded",                 // guarded | knocked | check
+ "attempts_today": 152, "sources_today": 3, "banned_today": 1,
+ "logins_today": 2, "last_event_ts": "..." /* or null */}
+// door_status rule: check iff an alert event in the last 24 h has no device
+// matching its (fingerprint) or (user+ip) now; else knocked iff attempts_today>0; else guarded.
+// Digest (GET /api/digests → {"digests":[...]})
+{"date": "2026-07-08", "text": "…rendered summary…",
+ "stats": {"ip_count":3,"attempt_count":152,"banned_count":1,"login_count":2,
+           "top_ips":[{"ip":"...","count":97,"country":"RU"}]}, "sent_at": "..." /* or null */}
+// Errors: {"error":{"code":"invalid_argument|not_found|origin_forbidden|internal","message":"..."}}
+// with status 422 / 404 / 403 / 500. SSE frames: "event: event.created\ndata: <Event JSON>\n\n";
+// event.updated carries the full updated Event; summary.changed carries the Summary object.
+```
 
 ## 12. Web UI (Svelte 5)
 
@@ -378,9 +441,10 @@ Phone-first (family checks on phones), responsive to desktop.
 ### 12.2 Devices / Settings
 
 - Devices: list (emoji, name, matchers), add/edit/delete modal.
-- Settings: locale (ja/en), digest time, ntfy server/topic, immediate-ban
-  toggle, include-IP toggle, test-notification button, last delivery
-  failures list.
+- Settings: locale (ja/en), digest time + skip-empty, immediate-ban
+  toggle, include-IP toggle, ntfy destination read-only/masked with a
+  "change it in doorlog.yml" hint (T7), test-notification button, last
+  delivery failures list.
 
 ### 12.3 Visual identity ("cute" made concrete)
 
@@ -406,6 +470,8 @@ Full default file (also `configuration.md` source of truth):
 ```yaml
 locale: ja                 # ja | en
 listen: ":8090"
+trusted_hosts: []          # extra Host header values to accept (e.g. "doorlog.home.arpa");
+                           # requests with other Hosts are 403 (DNS-rebinding guard, T3)
 data_dir: "/data"
 timezone: ""               # empty = host TZ
 ingest:
@@ -425,8 +491,19 @@ retention_days: 90
 demo: false                # or DOORLOG_DEMO=1
 ```
 
+Env mapping is an explicit table (not naive `_`-splitting, since key
+names contain `_`): `DOORLOG_LOCALE`, `DOORLOG_LISTEN`,
+`DOORLOG_TRUSTED_HOSTS` (comma-sep), `DOORLOG_TIMEZONE`,
+`DOORLOG_AUTHLOG_PATH`, `DOORLOG_FAIL2BAN_PATH`, `DOORLOG_BACKFILL`,
+`DOORLOG_NTFY_URL`, `DOORLOG_NTFY_TOPIC`, `DOORLOG_IMMEDIATE_BAN`,
+`DOORLOG_INCLUDE_IP`, `DOORLOG_DIGEST_TIME`, `DOORLOG_DIGEST_SKIP_EMPTY`,
+`DOORLOG_MMDB_PATH`, `DOORLOG_RETENTION_DAYS`, `DOORLOG_DEMO`.
+(The §16 compose example uses these names.)
+
 Secrets: only `DOORLOG_NTFY_TOKEN` (env-only by design; setup docs tell
-the user to create tokens themselves).
+the user to create tokens themselves). The delivery endpoint
+(`notify.ntfy_url`/`ntfy_topic`) is deliberately NOT settable via
+API/UI — see T7.
 
 ## 14. Security & privacy
 
@@ -436,11 +513,12 @@ everything else stays on the host.
 | # | Threat | Mitigation |
 |---|---|---|
 | T1 | Attacker-controlled usernames rendered in UI (stored XSS) | Svelte text interpolation only; `{@html}` banned via CI grep; API returns JSON (no HTML composition server-side) |
-| T2 | Log-derived strings injected into push payloads (header/control chars) | Strip C0/C1 + newlines at parse; ntfy values header-encoded; 64-rune cap |
-| T3 | No-auth UI abused cross-site | LAN-bind guidance; Origin check on state-changing routes; no cookies at all |
+| T2 | Log-derived strings injected into push payloads or UI (header/control chars) | Shared sanitizer at parse boundary on ALL captured fields incl. raw_sample (§5.3); ntfy values header-encoded; length caps |
+| T3 | No-auth UI abused cross-site (CSRF, DNS rebinding) | LAN-bind guidance; Host allowlist (`trusted_hosts`) on every request; Origin check on state-changing routes; no cookies at all |
 | T4 | Hostile/oversized log lines (ReDoS, memory) | 8 KB line truncation; anchored linear regexes; fuzz test on parsers |
 | T5 | Notification storms | Aggregation-first model (ADR-004); notifier rate floor: min 30 s between pushes, overflow folds into digest |
 | T6 | SQL injection / path traversal | Prepared statements only; config paths cleaned + must be absolute |
+| T7 | No-auth settings API turned into an egress/SSRF primitive (repoint pushes at an attacker URL or internal service) | Delivery endpoint + token are config-file/env only, never via API/UI; settings PUT whitelist contains no URLs |
 
 Privacy defaults documented in README: prefer self-hosted ntfy; on
 ntfy.sh use an unguessable topic; `include_ip: false` for stricter
@@ -459,15 +537,19 @@ proxy with auth for remote access" prominently.
   distinct IPs, one ban, digest firing. Demo events carry
   `source: demo` and a UI ribbon shows "demo". Used for the README GIF
   and by anyone evaluating without a server.
-- journald adapter: same `Source` interface via
-  `journalctl -u ssh -f -o json`; optional issue (wave 3), image gains
-  `systemd` client libs only in a `-journald` variant if size demands.
+- journald adapter: same `Source` interface; execs
+  `journalctl -t sshd -t sshd-session -f -o json`, composes a synthetic
+  RFC3339 syslog line from `__REALTIME_TIMESTAMP`/`SYSLOG_IDENTIFIER`/
+  `MESSAGE` and feeds the existing sshd parser unchanged; optional
+  issue (wave 3), image gains `journalctl` only in a `-journald`
+  variant if size demands.
 
 ## 16. Distribution
 
 - Multi-stage Dockerfile: `node:22-alpine` (web build) →
   `golang:1.24-alpine` (embed + build, CGO off) → `alpine:3.20` runtime
-  (non-root UID 65532, `/data` volume). Image target < 40 MB.
+  (non-root UID 65532, `/data` volume). Image size: < 40 MB target,
+  < 60 MB hard CI gate (embedded fonts + pure-Go SQLite make 40 brittle).
 - `docker-compose.yml` (README copy-paste):
 
 ```yaml
@@ -481,8 +563,8 @@ services:
       - doorlog-data:/data
     environment:
       DOORLOG_LOCALE: ja
-      DOORLOG_NOTIFY_NTFY_URL: https://ntfy.sh
-      DOORLOG_NOTIFY_NTFY_TOPIC: my-unguessable-topic-x7k2
+      DOORLOG_NTFY_URL: https://ntfy.sh
+      DOORLOG_NTFY_TOPIC: my-unguessable-topic-x7k2
     restart: unless-stopped
 volumes: { doorlog-data: {} }
 ```
@@ -515,6 +597,9 @@ v1 release acceptance (all must hold):
 - [ ] digest pushes at the configured time with correct counts
 - [ ] README: GIF, 5-minute setup, privacy notes, rsyslog note for
       journald-only hosts
+- [ ] UI hardening pass: Lighthouse perf ≥ 90 on demo data; bundled
+      font subsets < 300 KB total (deferred here from Issue 11 so core
+      UI work isn't blocked on tooling)
 
 ## 18. Known unknowns
 

@@ -10,14 +10,16 @@ API.
   pre-fill query params from timeline alert cards and highlights the
   triggering event context.
 - Settings: locale switch (ja/en, live reload of `/api/locale`), digest
-  time picker, ntfy server/topic fields, token field (write-only, blank
-  on read), immediate-ban toggle, include-IP toggle, test-notification
-  button with inline result, last delivery failures list.
+  time picker + skip-empty toggle, immediate-ban toggle, include-IP
+  toggle, ntfy destination shown read-only/masked with a "change it in
+  doorlog.yml" hint (DESIGN T7 — no URL/token fields exist), test-
+  notification button with inline result, delivery failures list.
 - Optimistic UI with server-error rollback; all strings from locale.
 
 ## Acceptance criteria
 - Vitest component tests: device CRUD round-trip against mocked API,
-  settings whitelist behavior, token never echoed; axe-core pass.
+  settings whitelist behavior, masked destination rendering (no
+  unmasked URL in DOM); axe-core pass.
 
 ## Validation
 `cd web && npm run check && npm test`

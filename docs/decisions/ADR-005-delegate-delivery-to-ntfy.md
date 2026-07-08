@@ -28,3 +28,7 @@ without differentiating.
   push payloads.
 - If ntfy is unreachable, notifier retries with backoff and surfaces the
   failure in the UI settings page; events are never lost (store-first).
+- The delivery endpoint (`ntfy_url`/`ntfy_topic`) and token are
+  config-file/env only — deliberately NOT settable through the no-auth
+  API/UI, so the settings surface cannot be turned into an egress/SSRF
+  primitive (DESIGN threat T7).

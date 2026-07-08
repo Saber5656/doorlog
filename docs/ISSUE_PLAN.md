@@ -21,7 +21,7 @@ optional for the v1 release.
 | 03 | sshd auth.log parser (fixtures, fuzz seed) | 02 | 06, 13 |
 | 04 | fail2ban parser (fixtures) | 02 | 06, 13 |
 | 05 | File tailer (rotation, truncation, watermark persistence) | 02 | 13, 15 |
-| 06 | Aggregator (failed-attempt buckets) + enrichment (devices, geo) | 02, 03 | 09, 10, 13 |
+| 06 | Aggregator (failed-attempt buckets) + enrichment (devices, geo) | 02, 03, 04 | 09, 10, 13 |
 | 07 | Translation layer + locales ja/en (golden tests) | 02 | 08, 09, 10 |
 | 08 | ntfy notifier + delivery rules + retry | 07 | 09 |
 | 09 | Daily digest (stats rollup, scheduler, push) | 06, 07, 08 | 14 |

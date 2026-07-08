@@ -30,7 +30,8 @@ Serve the JSON API and SSE stream per the DESIGN §11 contract table.
 `go test ./internal/server/...`
 
 ## Dependencies
-02, 06, 07. Blocks 11, 12.
+02, 06, 07, 08 (`/api/notify/test` + failures list need the notifier).
+Blocks 11, 12, 13.
 
 ## Non-goals
 Any HTML rendering; auth (v1 non-goal, README covers it).

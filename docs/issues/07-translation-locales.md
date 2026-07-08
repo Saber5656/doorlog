@@ -18,7 +18,8 @@ Implement the locale-file renderer and author the full `ja.yaml` and
   ja and en; tone lint: golden files grepped for banned jargon tokens
   ("SSH " bare, "brute force", "認証失敗") outside parentheses.
 - `GET /api/locale` payload shape prepared as a marshalable struct
-  (served in Issue 10).
+  containing exactly the `ui:` + `door_status:` namespaces (served in
+  Issue 10; all other namespaces are server-render-only per §11).
 
 ## Acceptance criteria
 - ja/en key sets identical; goldens pass; strict-mode error paths

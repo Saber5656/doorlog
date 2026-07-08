@@ -293,11 +293,12 @@ Tone guide (enforced in review + golden tests):
 4. Never blame a family member. Never joke about a real alert.
 
 UI chrome strings (buttons, headings) live in the same locale files
-under `ui:` and are served to the frontend via `GET /api/locale`.
+under `ui:`; the frontend receives exactly `ui:` + `door_status:` via
+`GET /api/locale` (§11) — everything else is server-rendered.
 
 ## 9. Notifications (ntfy)
 
-- `POST {ntfy.server_url}/{ntfy.topic}`; headers: `Title` (push_title),
+- `POST {notify.ntfy_url}/{notify.ntfy_topic}`; headers: `Title` (push_title),
   `Priority` (alert→`high`, digest/notice→`default`), `Tags`
   (comma-separated: `door,alert` / `door,notice` / `door,ok`);
   body = translated push text. Optional
@@ -374,14 +375,19 @@ JSON, no auth (v1, LAN assumption — §14). Base `/api`. Errors:
 | `GET /api/settings` / `PUT` | Whitelisted keys only: `locale`, `digest.time`, `digest.skip_empty`, `notify.immediate_ban`, `notify.include_ip`. Delivery endpoint (`notify.ntfy_url`, `ntfy_topic`, token) is config-file/env only — never readable or writable via API (T7); GET returns it masked (`ntfy.example.com/…abc`) for display |
 | `POST /api/notify/test` | Sends test push, returns delivery result |
 | `GET /api/notify/failures?limit=10` | Recent delivery failures (ts, error) for the settings page |
-| `GET /api/locale` | All `ui:` + `events:` strings for the active locale (frontend i18n) |
+| `GET /api/locale` | Exactly the `ui:` and `door_status:` namespaces for the active locale (frontend i18n). Event/digest/geo/countries strings are server-rendered into `text` and never shipped raw to the frontend |
 | `GET /api/stream` | SSE: `event.created`, `event.updated`, `summary.changed` |
 | `GET /healthz` | 200 + `{version, demo:bool}` |
 
-Request guard (T3): every request's `Host` must match `listen` or an
-entry in `trusted_hosts` (§13) — DNS-rebinding defense; additionally,
-state-changing routes require the `Origin` header, when present, to
-match the request host. No cookies exist anywhere.
+Request guard (T3): DNS-rebinding defense that still lets a copy-paste
+install work. A request's `Host` (host part, port ignored) is accepted
+iff it is: an IP literal, `localhost`, a single-label hostname
+(`http://server:8090`), a `.local`/`.home.arpa`/`.lan`/`.internal`
+name, or listed in `trusted_hosts`. Any other public-suffix FQDN → 403
+`origin_forbidden` (a rebinding attacker must use their own FQDN;
+household setups never do). Additionally, state-changing routes
+require the `Origin` header, when present, to match the request host.
+No cookies exist anywhere.
 
 ### 11.1 Wire shapes (normative)
 
@@ -470,8 +476,10 @@ Full default file (also `configuration.md` source of truth):
 ```yaml
 locale: ja                 # ja | en
 listen: ":8090"
-trusted_hosts: []          # extra Host header values to accept (e.g. "doorlog.home.arpa");
-                           # requests with other Hosts are 403 (DNS-rebinding guard, T3)
+trusted_hosts: []          # extra Host values to accept beyond the built-in rule
+                           # (IP literals, localhost, single-label, .local/.home.arpa/
+                           # .lan/.internal are always accepted); public FQDNs like
+                           # "door.example.com" must be listed here (T3, §11)
 data_dir: "/data"
 timezone: ""               # empty = host TZ
 ingest:
@@ -514,7 +522,7 @@ everything else stays on the host.
 |---|---|---|
 | T1 | Attacker-controlled usernames rendered in UI (stored XSS) | Svelte text interpolation only; `{@html}` banned via CI grep; API returns JSON (no HTML composition server-side) |
 | T2 | Log-derived strings injected into push payloads or UI (header/control chars) | Shared sanitizer at parse boundary on ALL captured fields incl. raw_sample (§5.3); ntfy values header-encoded; length caps |
-| T3 | No-auth UI abused cross-site (CSRF, DNS rebinding) | LAN-bind guidance; Host allowlist (`trusted_hosts`) on every request; Origin check on state-changing routes; no cookies at all |
+| T3 | No-auth UI abused cross-site (CSRF, DNS rebinding) | LAN-bind guidance; Host rule on every request (LAN-shaped names allowed, public FQDNs need `trusted_hosts` — §11); Origin check on state-changing routes; no cookies at all |
 | T4 | Hostile/oversized log lines (ReDoS, memory) | 8 KB line truncation; anchored linear regexes; fuzz test on parsers |
 | T5 | Notification storms | Aggregation-first model (ADR-004); notifier rate floor: min 30 s between pushes, overflow folds into digest |
 | T6 | SQL injection / path traversal | Prepared statements only; config paths cleaned + must be absolute |

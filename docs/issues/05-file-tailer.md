@@ -13,9 +13,10 @@ file, survive rotation/truncation, persist (inode, offset) watermarks.
 - Watermark `{inode, offset}` saved via store after each batch;
   on start: resume if inode matches, else start at EOF (or offset 0
   when `ingest.backfill: true`).
-- Backfill mode: read existing content once; events older than the
-  digest watermark are timeline-only (no push, no digest counting) —
-  coordinate via a `Backfilled bool` on `RawLine`.
+- Backfill mode: read existing content once, setting
+  `RawLine.Backfilled=true` on every line emitted during that initial
+  read; downstream events become timeline-only (no push, excluded from
+  digest counts — ADR-006).
 - Integration-style tests with temp files: append, rotate (rename+new),
   truncate, restart-resume, backfill flag propagation.
 

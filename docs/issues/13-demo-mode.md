@@ -29,7 +29,8 @@ can be experienced (and GIF-recorded) with zero setup (DESIGN §15).
 `go test ./internal/ingest/... -run TestDemo && DOORLOG_DEMO=1 go run ./cmd/doorlog & curl localhost:8090/api/events`
 
 ## Dependencies
-03, 04, 05, 06. Blocks 14.
+05, 06, 07, 09, 10 (03/04 transitively; the end-to-end smoke needs
+translation, digest, and the API). Blocks 14.
 
 ## Non-goals
 Synthetic load testing; configurable scenarios.

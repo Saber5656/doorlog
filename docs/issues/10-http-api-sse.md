@@ -13,8 +13,10 @@ Serve the JSON API and SSE stream per the DESIGN §11 contract table.
 - SSE `/api/stream`: `event.created`, `event.updated`,
   `summary.changed`; heartbeat comment every 25 s; last-event-id not
   required (UI refetches on reconnect).
-- Guard middleware (T3): Host allowlist (`listen` + `trusted_hosts`)
-  on all routes, Origin check on state-changing routes; no cookies.
+- Guard middleware (T3): the DESIGN §11 built-in Host rule (IP
+  literals, localhost, single-label, .local/.home.arpa/.lan/.internal)
+  plus `trusted_hosts` on all routes, Origin check on state-changing
+  routes; no cookies.
 - Settings PUT whitelist per §11 (no URLs, no token — T7); GET returns
   the ntfy destination masked.
 - Contract tests: httptest against a seeded store — pagination cursor

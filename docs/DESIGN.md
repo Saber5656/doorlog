@@ -617,7 +617,7 @@ v1 release acceptance (all must hold):
 | U2 | fail2ban `dateformat` overrides | Document assumption (default format); ignore-with-metric otherwise |
 | U3 | GeoLite2 licensing text in README | Verify exact attribution wording during Issue 06 |
 | U4 | Font subsetting pipeline (M PLUS Rounded 1c is large) | Issue 11 validates woff2 subset < 300 KB total; fallback = system rounded stack |
-| U5 | journald-only hosts UX | ADR-006; optional Issue 14 |
+| U5 | journald-only hosts UX | ADR-006; optional Issue 15 |
 
 ## 19. v2 backlog (recorded, not planned)
 
